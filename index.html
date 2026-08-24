@@ -562,6 +562,18 @@
     return h12 + ":" + pad(m) + " " + ampm;
   }
 
+  // Snaps a "HH:MM" value to the nearest 15-minute mark, wrapping within
+  // the day. Needed because not every browser's time picker honors the
+  // step="900" attribute (mobile wheel pickers in particular).
+  function roundToQuarterHour(value) {
+    if (!value) return value;
+    var parts = value.split(":").map(Number);
+    var total = parts[0] * 60 + parts[1];
+    var rounded = Math.round(total / 15) * 15;
+    rounded = ((rounded % (24 * 60)) + 24 * 60) % (24 * 60);
+    return pad(Math.floor(rounded / 60)) + ":" + pad(rounded % 60);
+  }
+
   // Decimal hours between a "HH:MM" clock-in and clock-out. If the clock-out
   // is earlier in the day than clock-in, the shift is assumed to have
   // crossed midnight (e.g. 22:00 -> 06:00 = 8 hrs).
@@ -628,6 +640,7 @@
       var timeInInput = document.createElement("input");
       timeInInput.type = "time";
       timeInInput.className = "time-input";
+      timeInInput.step = "900";
       timeInInput.dataset.date = iso;
       timeInInput.dataset.field = "in";
       timeInInput.value = saved.in || "";
@@ -638,6 +651,7 @@
       var timeOutInput = document.createElement("input");
       timeOutInput.type = "time";
       timeOutInput.className = "time-input";
+      timeOutInput.step = "900";
       timeOutInput.dataset.date = iso;
       timeOutInput.dataset.field = "out";
       timeOutInput.value = saved.out || "";
@@ -684,6 +698,8 @@
   function onTimeChange(e) {
     var date = e.target.dataset.date;
     var field = e.target.dataset.field;
+    e.target.value = roundToQuarterHour(e.target.value);
+
     if (!state.times) state.times = {};
     if (!state.times[date]) state.times[date] = {};
     state.times[date][field] = e.target.value;
