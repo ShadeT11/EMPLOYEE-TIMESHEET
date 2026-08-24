@@ -193,9 +193,11 @@
     font-weight: 500;
     padding: 10px 8px;
     border-bottom: 1px solid var(--border);
+    white-space: nowrap;
   }
 
   thead th.num { text-align: right; }
+  thead th.time { min-width: 108px; }
 
   tbody td {
     padding: 10px 8px;
@@ -210,6 +212,7 @@
   .day-name {
     font-weight: 600;
     font-size: 0.92rem;
+    white-space: nowrap;
   }
 
   .day-date {
@@ -220,26 +223,35 @@
     margin-top: 1px;
   }
 
-  .hours-input {
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-variant-numeric: tabular-nums;
-    font-size: 1.05rem;
-    font-weight: 600;
-    text-align: right;
-    width: 100%;
-    max-width: 84px;
+  .time-input {
+    font-family: inherit;
+    font-size: 0.92rem;
+    color: var(--ink);
     background: var(--surface-2);
     border: 1px solid var(--border-strong);
     border-radius: 8px;
-    padding: 9px 10px;
-    color: var(--ink);
+    padding: 8px 8px;
+    width: 100%;
+    min-width: 104px;
     -webkit-appearance: none;
     appearance: none;
-    margin-left: auto;
-    display: block;
   }
 
-  .hours-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .hours-value {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 1.0rem;
+    font-weight: 600;
+    text-align: right;
+    display: block;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  .hours-value.empty {
+    color: var(--muted);
+    font-weight: 500;
+  }
 
   tfoot td {
     padding: 14px 8px;
@@ -451,22 +463,24 @@
         <thead>
           <tr>
             <th>Day</th>
+            <th class="time">Time In</th>
+            <th class="time">Time Out</th>
             <th class="num">Hours</th>
           </tr>
         </thead>
         <tbody id="day-rows"></tbody>
         <tfoot>
           <tr class="subtotal">
-            <td class="total-label">Regular (up to 40)</td>
-            <td class="total-value" id="regular-hours">0.0<span class="unit">HRS</span></td>
+            <td class="total-label" colspan="3">Regular (up to 40)</td>
+            <td class="total-value" id="regular-hours">0.00<span class="unit">HRS</span></td>
           </tr>
           <tr class="subtotal">
-            <td class="total-label"><span class="ot-label"><span class="ot-dot"></span>Overtime (over 40)</span></td>
-            <td class="total-value" id="overtime-hours">0.0<span class="unit">HRS</span></td>
+            <td class="total-label" colspan="3"><span class="ot-label"><span class="ot-dot"></span>Overtime (over 40)</span></td>
+            <td class="total-value" id="overtime-hours">0.00<span class="unit">HRS</span></td>
           </tr>
           <tr class="grand">
-            <td class="total-label" style="font-family:'Fraunces',ui-serif,Georgia,serif;font-size:1.05rem;">Total for week</td>
-            <td class="total-value" id="total-hours">0.0<span class="unit">HRS</span></td>
+            <td class="total-label" colspan="3" style="font-family:'Fraunces',ui-serif,Georgia,serif;font-size:1.05rem;">Total for week</td>
+            <td class="total-value" id="total-hours">0.00<span class="unit">HRS</span></td>
           </tr>
         </tfoot>
       </table>
@@ -488,7 +502,7 @@
 <script>
 (function () {
   var DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-  var STORAGE_KEY = "weekly-timesheet-v1";
+  var STORAGE_KEY = "weekly-timesheet-v2";
 
   var RECIPIENT = "tshade@flooringenv.com";
   var OT_THRESHOLD = 40;
@@ -534,7 +548,32 @@
   }
 
   function formatLong(d) {
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  // "14:30" -> "2:30 PM". Used anywhere times get read back to a human
+  // (email body, HTML email table, printed sheet).
+  function formatTime(t) {
+    if (!t) return "—";
+    var parts = t.split(":").map(Number);
+    var h = parts[0], m = parts[1];
+    var ampm = h >= 12 ? "PM" : "AM";
+    var h12 = h % 12; if (h12 === 0) h12 = 12;
+    return h12 + ":" + pad(m) + " " + ampm;
+  }
+
+  // Decimal hours between a "HH:MM" clock-in and clock-out. If the clock-out
+  // is earlier in the day than clock-in, the shift is assumed to have
+  // crossed midnight (e.g. 22:00 -> 06:00 = 8 hrs).
+  function computeHours(timeIn, timeOut) {
+    if (!timeIn || !timeOut) return 0;
+    var inParts = timeIn.split(":").map(Number);
+    var outParts = timeOut.split(":").map(Number);
+    var inMinutes = inParts[0] * 60 + inParts[1];
+    var outMinutes = outParts[0] * 60 + outParts[1];
+    var diff = outMinutes - inMinutes;
+    if (diff < 0) diff += 24 * 60;
+    return diff / 60;
   }
 
   function loadState() {
@@ -554,16 +593,30 @@
     return mondayOf(new Date());
   }
 
-  var hoursInputs = [];
+  var dayRows = [];
+
+  function updateRowHours(row) {
+    var hasBoth = !!row.timeIn.value && !!row.timeOut.value;
+    var h = computeHours(row.timeIn.value, row.timeOut.value);
+    if (hasBoth) {
+      row.hoursEl.textContent = h.toFixed(2);
+      row.hoursEl.classList.remove("empty");
+    } else {
+      row.hoursEl.textContent = "–";
+      row.hoursEl.classList.add("empty");
+    }
+    return h;
+  }
 
   function buildRows(monday) {
     rowsBody.innerHTML = "";
-    hoursInputs = [];
+    dayRows = [];
     for (var i = 0; i < 7; i++) {
       var d = new Date(monday);
       d.setDate(monday.getDate() + i);
       var iso = toISO(d);
       var isWeekend = (i === 5 || i === 6);
+      var saved = (state.times && state.times[iso]) || {};
 
       var tr = document.createElement("tr");
       if (isWeekend) tr.className = "weekend";
@@ -571,33 +624,48 @@
       var tdDay = document.createElement("td");
       tdDay.innerHTML = '<div class="day-name">' + DAY_NAMES[i] + '</div><div class="day-date">' + formatLong(d) + '</div>';
 
-      var tdHours = document.createElement("td");
-      var input = document.createElement("input");
-      input.type = "number";
-      input.inputMode = "decimal";
-      input.step = "0.25";
-      input.min = "0";
-      input.max = "24";
-      input.placeholder = "0";
-      input.className = "hours-input";
-      input.dataset.date = iso;
-      input.value = state.hours && state.hours[iso] != null ? state.hours[iso] : "";
-      input.addEventListener("input", onHoursChange);
-      hoursInputs.push(input);
+      var tdIn = document.createElement("td");
+      var timeInInput = document.createElement("input");
+      timeInInput.type = "time";
+      timeInInput.className = "time-input";
+      timeInInput.dataset.date = iso;
+      timeInInput.dataset.field = "in";
+      timeInInput.value = saved.in || "";
+      timeInInput.addEventListener("change", onTimeChange);
+      tdIn.appendChild(timeInInput);
 
-      tdHours.appendChild(input);
+      var tdOut = document.createElement("td");
+      var timeOutInput = document.createElement("input");
+      timeOutInput.type = "time";
+      timeOutInput.className = "time-input";
+      timeOutInput.dataset.date = iso;
+      timeOutInput.dataset.field = "out";
+      timeOutInput.value = saved.out || "";
+      timeOutInput.addEventListener("change", onTimeChange);
+      tdOut.appendChild(timeOutInput);
+
+      var tdHours = document.createElement("td");
+      var hoursSpan = document.createElement("span");
+      hoursSpan.className = "hours-value";
+      tdHours.appendChild(hoursSpan);
+
       tr.appendChild(tdDay);
+      tr.appendChild(tdIn);
+      tr.appendChild(tdOut);
       tr.appendChild(tdHours);
       rowsBody.appendChild(tr);
+
+      var row = { date: iso, timeIn: timeInInput, timeOut: timeOutInput, hoursEl: hoursSpan };
+      dayRows.push(row);
+      updateRowHours(row);
     }
     updateTotal();
   }
 
   function weekTotal() {
     var sum = 0;
-    hoursInputs.forEach(function (inp) {
-      var v = parseFloat(inp.value);
-      if (!isNaN(v)) sum += v;
+    dayRows.forEach(function (row) {
+      sum += computeHours(row.timeIn.value, row.timeOut.value);
     });
     return sum;
   }
@@ -606,18 +674,23 @@
     var sum = weekTotal();
     var regular = Math.min(sum, OT_THRESHOLD);
     var overtime = Math.max(sum - OT_THRESHOLD, 0);
-    regularEl.innerHTML = regular.toFixed(1) + '<span class="unit">HRS</span>';
-    overtimeEl.innerHTML = overtime.toFixed(1) + '<span class="unit">HRS</span>';
-    totalEl.innerHTML = sum.toFixed(1) + '<span class="unit">HRS</span>';
+    regularEl.innerHTML = regular.toFixed(2) + '<span class="unit">HRS</span>';
+    overtimeEl.innerHTML = overtime.toFixed(2) + '<span class="unit">HRS</span>';
+    totalEl.innerHTML = sum.toFixed(2) + '<span class="unit">HRS</span>';
     submitNote.classList.remove("sent");
     submitNote.textContent = "Submitting emails this timesheet straight to " + RECIPIENT + " — no extra steps.";
   }
 
-  function onHoursChange(e) {
-    if (!state.hours) state.hours = {};
-    var v = e.target.value;
-    state.hours[e.target.dataset.date] = v === "" ? null : v;
+  function onTimeChange(e) {
+    var date = e.target.dataset.date;
+    var field = e.target.dataset.field;
+    if (!state.times) state.times = {};
+    if (!state.times[date]) state.times[date] = {};
+    state.times[date][field] = e.target.value;
     saveState(state);
+
+    var row = dayRows.filter(function (r) { return r.date === date; })[0];
+    if (row) updateRowHours(row);
     updateTotal();
   }
 
@@ -637,9 +710,9 @@
 
     startInput.value = mondayISO;
     state.startDate = mondayISO;
-    // Reset hours when the week actually changes, keep them when just re-rendering
+    // Reset times when the week actually changes, keep them when just re-rendering
     if (state.currentWeek !== mondayISO) {
-      if (!opts.preserveHours) state.hours = {};
+      if (!opts.preserveHours) state.times = {};
       state.currentWeek = mondayISO;
     }
     saveState(state);
@@ -661,9 +734,13 @@
   });
 
   clearBtn.addEventListener("click", function () {
-    state.hours = {};
+    state.times = {};
     saveState(state);
-    hoursInputs.forEach(function (inp) { inp.value = ""; });
+    dayRows.forEach(function (row) {
+      row.timeIn.value = "";
+      row.timeOut.value = "";
+      updateRowHours(row);
+    });
     updateTotal();
   });
 
@@ -680,10 +757,16 @@
     var sum = weekTotal();
     var regular = Math.min(sum, OT_THRESHOLD);
     var overtime = Math.max(sum - OT_THRESHOLD, 0);
-    var days = hoursInputs.map(function (inp, i) {
+    var days = dayRows.map(function (row, i) {
       var d = new Date(monday);
       d.setDate(monday.getDate() + i);
-      return { name: DAY_NAMES[i], date: formatLong(d), hours: inp.value ? parseFloat(inp.value) || 0 : 0 };
+      return {
+        name: DAY_NAMES[i],
+        date: formatLong(d),
+        timeIn: row.timeIn.value,
+        timeOut: row.timeOut.value,
+        hours: computeHours(row.timeIn.value, row.timeOut.value)
+      };
     });
     return { monday: monday, sunday: sunday, sum: sum, regular: regular, overtime: overtime, days: days };
   }
@@ -692,7 +775,7 @@
   // with spaces so it reads as a clean table in any mail app's font.
   function buildEmailBody() {
     var wk = weekParts();
-    var nameW = 11, dateW = 10;
+    var nameW = 11, timeW = 11;
 
     var lines = [];
     lines.push("WEEKLY TIMESHEET");
@@ -700,16 +783,16 @@
     lines.push("Employee: " + (employeeEl.value || "(not entered)"));
     if (roleEl.value) lines.push("Job / project: " + roleEl.value);
     lines.push("");
-    var rule = new Array(nameW + 1).join("-") + new Array(dateW + 1).join("-") + "-----";
-    lines.push(padR("DAY", nameW) + padR("DATE", dateW) + "HOURS");
+    var rule = new Array(nameW + 1).join("-") + new Array(timeW + 1).join("-") + new Array(timeW + 1).join("-") + "-----";
+    lines.push(padR("DAY", nameW) + padR("TIME IN", timeW) + padR("TIME OUT", timeW) + "HOURS");
     lines.push(rule);
     wk.days.forEach(function (d) {
-      lines.push(padR(d.name, nameW) + padR(d.date, dateW) + d.hours.toFixed(1));
+      lines.push(padR(d.name, nameW) + padR(formatTime(d.timeIn), timeW) + padR(formatTime(d.timeOut), timeW) + d.hours.toFixed(2));
     });
     lines.push(rule);
-    lines.push(padR("Regular (up to 40)", nameW + dateW) + wk.regular.toFixed(1));
-    lines.push(padR("Overtime (over 40)", nameW + dateW) + wk.overtime.toFixed(1));
-    lines.push(padR("TOTAL", nameW + dateW) + wk.sum.toFixed(1));
+    lines.push(padR("Regular (up to 40)", nameW + timeW * 2) + wk.regular.toFixed(2));
+    lines.push(padR("Overtime (over 40)", nameW + timeW * 2) + wk.overtime.toFixed(2));
+    lines.push(padR("TOTAL", nameW + timeW * 2) + wk.sum.toFixed(2));
 
     return lines.join("\n");
   }
@@ -721,19 +804,23 @@
     var rowsHTML = wk.days.map(function (d) {
       return '<tr><td style="padding:6px 14px;border-bottom:1px solid #ddd;">' + d.name +
         '</td><td style="padding:6px 14px;border-bottom:1px solid #ddd;color:#555;">' + d.date +
-        '</td><td style="padding:6px 14px;border-bottom:1px solid #ddd;text-align:right;font-variant-numeric:tabular-nums;">' + d.hours.toFixed(1) + '</td></tr>';
+        '</td><td style="padding:6px 14px;border-bottom:1px solid #ddd;color:#555;">' + formatTime(d.timeIn) +
+        '</td><td style="padding:6px 14px;border-bottom:1px solid #ddd;color:#555;">' + formatTime(d.timeOut) +
+        '</td><td style="padding:6px 14px;border-bottom:1px solid #ddd;text-align:right;font-variant-numeric:tabular-nums;">' + d.hours.toFixed(2) + '</td></tr>';
     }).join("");
 
     return '<table style="border-collapse:collapse;width:100%;font-size:14px;">' +
       '<thead><tr>' +
       '<th style="text-align:left;padding:6px 14px;border-bottom:2px solid #2c5f5a;color:#2c5f5a;">Day</th>' +
       '<th style="text-align:left;padding:6px 14px;border-bottom:2px solid #2c5f5a;color:#2c5f5a;">Date</th>' +
+      '<th style="text-align:left;padding:6px 14px;border-bottom:2px solid #2c5f5a;color:#2c5f5a;">Time In</th>' +
+      '<th style="text-align:left;padding:6px 14px;border-bottom:2px solid #2c5f5a;color:#2c5f5a;">Time Out</th>' +
       '<th style="text-align:right;padding:6px 14px;border-bottom:2px solid #2c5f5a;color:#2c5f5a;">Hours</th>' +
       '</tr></thead><tbody>' + rowsHTML + '</tbody>' +
       '<tfoot>' +
-      '<tr><td colspan="2" style="padding:6px 14px;color:#555;">Regular (up to 40)</td><td style="padding:6px 14px;text-align:right;">' + wk.regular.toFixed(1) + '</td></tr>' +
-      '<tr><td colspan="2" style="padding:6px 14px;color:#555;">Overtime (over 40)</td><td style="padding:6px 14px;text-align:right;">' + wk.overtime.toFixed(1) + '</td></tr>' +
-      '<tr><td colspan="2" style="padding:8px 14px;font-weight:bold;border-top:1px solid #ccc;">Total</td><td style="padding:8px 14px;text-align:right;font-weight:bold;border-top:1px solid #ccc;color:#2c5f5a;">' + wk.sum.toFixed(1) + '</td></tr>' +
+      '<tr><td colspan="4" style="padding:6px 14px;color:#555;">Regular (up to 40)</td><td style="padding:6px 14px;text-align:right;">' + wk.regular.toFixed(2) + '</td></tr>' +
+      '<tr><td colspan="4" style="padding:6px 14px;color:#555;">Overtime (over 40)</td><td style="padding:6px 14px;text-align:right;">' + wk.overtime.toFixed(2) + '</td></tr>' +
+      '<tr><td colspan="4" style="padding:8px 14px;font-weight:bold;border-top:1px solid #ccc;">Total</td><td style="padding:8px 14px;text-align:right;font-weight:bold;border-top:1px solid #ccc;color:#2c5f5a;">' + wk.sum.toFixed(2) + '</td></tr>' +
       '</tfoot></table>';
   }
 
@@ -745,7 +832,7 @@
     var rows = wk.days.map(function (d, i) {
       var weekend = i === 5 || i === 6;
       return '<tr' + (weekend ? ' class="ps-weekend"' : '') + '>' +
-        '<td>' + d.name + '</td><td>' + d.date + '</td><td class="num">' + d.hours.toFixed(1) + '</td></tr>';
+        '<td>' + d.name + '</td><td>' + d.date + '</td><td>' + formatTime(d.timeIn) + '</td><td>' + formatTime(d.timeOut) + '</td><td class="num">' + d.hours.toFixed(2) + '</td></tr>';
     }).join("");
 
     return (
@@ -758,12 +845,12 @@
         (roleEl.value ? '<div><span>Job / project</span>' + roleEl.value + '</div>' : '') +
       '</div>' +
       '<table class="ps-table">' +
-        '<thead><tr><th>Day</th><th>Date</th><th class="num">Hours</th></tr></thead>' +
+        '<thead><tr><th>Day</th><th>Date</th><th>Time In</th><th>Time Out</th><th class="num">Hours</th></tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
         '<tfoot>' +
-          '<tr><td colspan="2">Regular (up to 40)</td><td class="num">' + wk.regular.toFixed(1) + '</td></tr>' +
-          '<tr><td colspan="2">Overtime (over 40)</td><td class="num">' + wk.overtime.toFixed(1) + '</td></tr>' +
-          '<tr class="ps-grand"><td colspan="2">Total</td><td class="num">' + wk.sum.toFixed(1) + '</td></tr>' +
+          '<tr><td colspan="4">Regular (up to 40)</td><td class="num">' + wk.regular.toFixed(2) + '</td></tr>' +
+          '<tr><td colspan="4">Overtime (over 40)</td><td class="num">' + wk.overtime.toFixed(2) + '</td></tr>' +
+          '<tr class="ps-grand"><td colspan="4">Total</td><td class="num">' + wk.sum.toFixed(2) + '</td></tr>' +
         '</tfoot>' +
       '</table>' +
       '<div class="ps-sign">' +
